@@ -1,0 +1,13 @@
+name = "ClusterStats"
+uuid = "3302d4d4-0c3b-4760-94e7-2a9e40f29b7c"
+authors = ["Simon Henin"]
+version = "0.1.0"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+julia = "1"
+
+[targets]
+test = ["Test"]
