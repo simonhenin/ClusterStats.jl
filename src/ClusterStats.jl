@@ -1,5 +1,6 @@
 module ClusterStats
 
-# Write your package code here.
+export cluster_correct
+include("cluster_stats.jl")
 
 end
