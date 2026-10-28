@@ -10,6 +10,10 @@ function cluster_correct(obs, null; zval=1.96, pval=0.05, tail=0, cluster_stat="
 #   obs = dim1 x dim2 (already computed statistic map)
 #   null = dim1 x dim2 x n_perms (already computed permutation statistic maps)
 
+    tail in (-1, 0, 1) || throw(ArgumentError("tail must be -1, 0, or 1, got $(repr(tail))"))
+    cluster_stat in ("maxsum", "maxsize") ||
+        throw(ArgumentError("cluster_stat must be \"maxsum\" or \"maxsize\", got $(repr(cluster_stat))"))
+
     if compute_stat
         n, dim1, dim2, n_perms = size(null)
         tmap_null = zeros(dim1, dim2, n_perms)
@@ -41,6 +45,9 @@ function cluster_correct(obs, null; zval=1.96, pval=0.05, tail=0, cluster_stat="
                     end
                 end
             end
+            # all-zero differences give NaN (no evidence); treat as a zero statistic
+            _zero_nonfinite!(tmap)
+            _zero_nonfinite!(tmap_null)
         else
             error("test_type must be either 't' or 'z'")
         end
@@ -66,11 +73,13 @@ function cluster_correct(obs, null; zval=1.96, pval=0.05, tail=0, cluster_stat="
 
 
     zmap = (diffmap .- mean_h) ./ std_h
+    # zero variance (0/0) or non-finite input would otherwise be labelled as a cluster
+    _zero_nonfinite!(zmap)
 
     thresh_zmap = copy(zmap)
     thresh_zmap[abs.(thresh_zmap) .< zval] .= 0
 
-    cluster_correct_zmap = thresh_zmap
+    cluster_correct_zmap = copy(thresh_zmap)
     labels = label_components(cluster_correct_zmap .!= 0)
     islands, islandvals = region_props(cluster_correct_zmap, labels)
     too_small = [key for (key, val) in islands if length(val) < min_size]
@@ -99,6 +108,7 @@ function cluster_correct(obs, null; zval=1.96, pval=0.05, tail=0, cluster_stat="
     for permi in 1:n_permutes
         threshimg = permmaps[permi, :, :]
         threshimg = (threshimg .- mean_h) ./ std_h
+        _zero_nonfinite!(threshimg)
 
         positive_thresh = copy(threshimg)
         # positive_thresh[ collect((positive_thresh .> 0.0) .& (abs.(positive_thresh .- mean_h) .< zval)) ] .= 0.0
@@ -200,6 +210,15 @@ function cluster_correct(obs, null; zval=1.96, pval=0.05, tail=0, cluster_stat="
     return cluster_correct_zmap, zmap, thresh_zmap
 end
 
+function _zero_nonfinite!(A)
+    n = count(!isfinite, A)
+    if n > 0
+        @warn "Replacing $n non-finite statistic value(s) with 0"
+        A[.!isfinite.(A)] .= 0
+    end
+    return A
+end
+
 function region_props(img::Matrix{Float64}, labels::Matrix{Int64})
     all_labels = sort(unique(labels))
     # Skip the background (0) if it exists
@@ -232,14 +251,17 @@ function signed_rank_z(x, y=0)
         return NaN  # No valid data for test
     end
 
-    ranks = ordinalrank(abs.(nonzero_diffs))  # Compute ranks
+    absd = abs.(nonzero_diffs)
+    ranks = tiedrank(absd)  # Average ranks for ties
     signed_ranks = sign.(nonzero_diffs) .* ranks  # Apply signs
 
     W = sum(signed_ranks[signed_ranks .> 0])  # Sum of positive ranks
 
     # Compute z-score
     mean_W = n * (n + 1) / 4
-    std_W = sqrt(n * (n + 1) * (2*n + 1) / 24)
+    # Variance with tie correction: subtract sum(t^3 - t)/48 over groups of tied |diffs|
+    tie_term = sum(c -> c^3 - c, values(countmap(absd)))
+    std_W = sqrt(n * (n + 1) * (2*n + 1) / 24 - tie_term / 48)
     z_stat = (W - mean_W) / std_W
 
     return z_stat
