@@ -40,6 +40,19 @@ using StatsBase
             @test abs(z) < 0.5  # Should be close to 0 for symmetric distribution
         end
 
+        @testset "Known value" begin
+            # n=5, W=15, mean=7.5, var=5*6*11/24
+            @test signed_rank_z([1.0, 2.0, 3.0, 4.0, 5.0]) ≈ 7.5 / sqrt(13.75)
+        end
+
+        @testset "Ties use average ranks (order independent)" begin
+            x = [-2.0, -1.0, 1.0, 2.0]
+            @test isapprox(signed_rank_z(x), 0.0; atol=1e-12)
+            @test signed_rank_z(x) ≈ signed_rank_z(reverse(x))
+            y = [1.0, -1.0, 2.0, -2.0, 3.0, 1.0]
+            @test signed_rank_z(y) ≈ signed_rank_z(y[[6, 3, 1, 5, 2, 4]])
+        end
+
         @testset "Custom comparison value" begin
             x = [3.0, 4.0, 5.0, 6.0]
             y = 2.0
@@ -179,6 +192,51 @@ using StatsBase
 
             @test size(result) == (3, 3)
             @test all(isfinite.(result) .|| isnan.(result))  # Allow NaN for zero variance
+        end
+
+        @testset "thresh_zmap is not aliased to the corrected result" begin
+            base = [0.01 * i * j for i in 1:6, j in 1:6]
+            null = cat([base .+ (k - 50.5) / 30 for k in 1:100]...; dims=3)
+            obs = copy(base)
+            obs[1:2, 1:2] .+= 10.0   # 4-voxel cluster, survives
+            obs[6, 6] += 10.0        # isolated voxel, removed by min_size
+
+            result, zmap, thresh_zmap = cluster_correct(obs, null, zval=1.96, pval=0.05, min_size=2)
+
+            @test all(result[1:2, 1:2] .!= 0)
+            @test result[6, 6] == 0
+            @test thresh_zmap[6, 6] != 0   # pre-correction map keeps the removed voxel
+            @test thresh_zmap != result
+        end
+
+        @testset "Non-finite statistics are not labelled as clusters" begin
+            # voxel (1,1) is all zeros in obs and null -> NaN signed-rank z
+            obs = reshape(sin.(1.0:135.0), 15, 3, 3)
+            null = reshape(cos.(1.0:(15 * 3 * 3 * 20)), 15, 3, 3, 20)
+            obs[:, 1, 1] .= 0.0
+            null[:, 1, 1, :] .= 0.0
+
+            result, zmap, thresh_zmap = cluster_correct(obs, null, compute_stat=true,
+                                                        test_type="z", pval=0.1)
+            @test !any(isnan, result)
+            @test !any(isnan, zmap)
+            @test !any(isnan, thresh_zmap)
+            @test result[1, 1] == 0
+
+            # NaN in a precomputed statistic map
+            stat = [0.1 * (i + j) for i in 1:4, j in 1:4]
+            stat[2, 2] = NaN
+            nullmaps = cat([[0.1 * (i + j) + (k - 10.5) / 10 for i in 1:4, j in 1:4] for k in 1:20]...; dims=3)
+            result, zmap, _ = cluster_correct(stat, nullmaps, pval=0.1)
+            @test !any(isnan, result)
+            @test !any(isnan, zmap)
+        end
+
+        @testset "Invalid options throw" begin
+            obs = zeros(3, 3)
+            null = reshape(collect(1.0:90.0), 3, 3, 10)
+            @test_throws ArgumentError cluster_correct(obs, null, tail=2)
+            @test_throws ArgumentError cluster_correct(obs, null, cluster_stat="maxsiz")
         end
 
         @testset "Strong signal detection" begin
